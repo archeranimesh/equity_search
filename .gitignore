@@ -1,0 +1,40 @@
+cat <<EOT >> .gitignore
+# Virtual env
+.venv/
+__pycache__/
+*.pyc
+
+# Data & DB
+/data/
+db/
+logs/
+models/
+
+# Env
+.env
+*.sqlite
+*.duckdb
+EOT
+
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+.Spotlight-V100
+.Trashes
+._*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pytest_cache/
+*.coverage
+.coverage.*
+*.egg-info/
+.venv/
+
+# Data artifacts
+data/parquet/
+db/*.duckdb
