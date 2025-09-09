@@ -1,0 +1,134 @@
+--- a/scripts/db_ingest.py
++++ b/scripts/db_ingest.py
+@@
+-"""
+-Ingest symbols from a raw NSE CSV/HTML file into a DuckDB database,
+-and map all symbols to the NIFTY50 index in equity_membership.
+-
+-Usage:
+-  python scripts/db_ingest.py --csv data/nifty50.csv --db data/universe.duckdb
+-  python scripts/db_ingest.py --csv data/nifty50.csv --db data/universe.duckdb --log DEBUG
+-"""
++"""
++Ingest symbols from a raw NSE CSV/HTML file into a DuckDB database,
++and map those symbols to a chosen index in equity_membership.
++
++Usage:
++  # Infer index from filename: data/indices/NIFTYNEXT50.csv -> NIFTYNEXT50
++  python scripts/db_ingest.py --csv data/indices/NIFTYNEXT50.csv --db data/universe.duckdb --log INFO
++
++  # Or pass index explicitly:
++  python scripts/db_ingest.py --csv data/nifty50.csv --index NIFTY50 --db data/universe.duckdb --log INFO
++"""
+@@
+-from pathlib import Path
++from pathlib import Path
+ import sys
++import pandas as pd
+@@
+ def _parse_args() -> argparse.Namespace:
+     p = argparse.ArgumentParser(
+         description="Ingest tickers into DuckDB (+ NIFTY50 membership)"
+     )
+     p.add_argument(
+         "--csv", required=True, help="Path to raw NSE CSV (or HTML masquerading as CSV)"
+     )
+     p.add_argument(
+         "--db",
+         default="data/universe.duckdb",
+         help="DuckDB path (default: data/universe.duckdb)",
+     )
++    p.add_argument(
++        "--index",
++        help="Index label for membership (e.g., NIFTY50, NIFTYNEXT50). If omitted, inferred from CSV filename.",
++    )
+     p.add_argument(
+         "--log", default="INFO", help="Logging level (DEBUG, INFO, WARNING, ERROR)"
+     )
+     return p.parse_args()
+@@
+-def _count_nifty50(con) -> int:
+-    return con.execute(
+-        "SELECT COUNT(*) FROM equity_membership WHERE index='NIFTY50';"
+-    ).fetchone()[0]
++def _count_index(con, index_label: str) -> int:
++    return con.execute(
++        "SELECT COUNT(*) FROM equity_membership WHERE index = ?;", [index_label]
++    ).fetchone()[0]
+
+-
+-def _sync_nifty50_membership(con) -> tuple[int, int]:
+-    """
+-    Insert (symbol,'NIFTY50') for all equities not already present.
+-    Returns (inserted_now, total_nifty50_rows).
+-    """
+-    before = _count_nifty50(con)
+-
+-    # Use LEFT JOIN anti-pattern (portable) instead of ANTI JOIN / MERGE
+-    con.execute(
+-        """
+-        INSERT INTO equity_membership(symbol, index)
+-        SELECT e.symbol, 'NIFTY50'
+-        FROM equities e
+-        LEFT JOIN equity_membership m
+-          ON m.symbol = e.symbol AND m.index = 'NIFTY50'
+-        WHERE m.symbol IS NULL;
+-        """
+-    )
+-
+-    after = _count_nifty50(con)
+-    inserted_now = after - before
+-    return inserted_now, after
++def _sync_membership(con, symbols: list[str], index_label: str) -> tuple[int, int]:
++    """
++    Insert (symbol, index_label) for symbols from the current CSV that are not already present.
++    Returns (inserted_now, total_rows_for_index).
++    """
++    before = _count_index(con, index_label)
++    df = pd.DataFrame({"symbol": [s.strip().upper() for s in symbols if s]})
++    con.register("tmp_syms", df)
++    con.execute(
++        """
++        INSERT INTO equity_membership(symbol, index)
++        SELECT t.symbol, ?
++        FROM tmp_syms t
++        LEFT JOIN equity_membership m
++          ON m.symbol = t.symbol AND m.index = ?
++        WHERE m.symbol IS NULL;
++        """,
++        [index_label, index_label],
++    )
++    con.unregister("tmp_syms")
++    after = _count_index(con, index_label)
++    return (after - before), after
+@@
+     csv_path = Path(args.csv)
+     db_path = Path(args.db)
+
+     log.info("Extracting symbols from %s", csv_path)
+     symbols = extract_symbols(csv_path)
+     log.info("Extracted %d symbols", len(symbols))
++    # Determine index label (explicit or inferred from filename)
++    index_label = (args.index or csv_path.stem).upper().replace(" ", "").replace("-", "").replace("_", "")
+@@
+     before = len(fetch_all_symbols(con))
+     total = upsert_symbols(con, symbols)
+     inserted = total - before
+
+-    # --- NEW: sync membership → NIFTY50
++    # --- NEW: sync membership → selected index (symbols from this CSV)
+     _ensure_membership_table(con)
+-    inserted_now, total_nifty50 = _sync_nifty50_membership(con)
++    inserted_now, total_for_index = _sync_membership(con, symbols, index_label)
+
+     log.info("Ingest complete")
+     log.info("   source:        %s", csv_path)
+     log.info("   db:            %s", db_path)
+     log.info("   found:         %d symbols in source", len(symbols))
+     log.info("   before:        %d rows in equities", before)
+     log.info("   inserted:      %d new rows in equities", inserted)
+     log.info("   total:         %d rows in equities now", total)
+-    log.info("   NIFTY50 add:   %d new membership rows", inserted_now)
+-    log.info("   NIFTY50 total: %d membership rows now", total_nifty50)
++    log.info("   %s add:   %d new membership rows", index_label, inserted_now)
++    log.info("   %s total: %d membership rows now", index_label, total_for_index)
