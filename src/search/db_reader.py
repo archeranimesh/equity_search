@@ -11,6 +11,43 @@ log = logging.getLogger(__name__)
 
 
 # --- add this helper at top-level ---
+def fetch_names_for_symbols(db_path: str, symbols: list[str]) -> dict[str, str]:
+    """Return {symbol -> company_name} for the given symbols (case-insensitive)."""
+    log = logging.getLogger("src.search.db_reader")
+    symbols_u = [str(s).upper() for s in symbols if s]
+    if not symbols_u:
+        log.debug("db_name_lookup_skip_empty")
+        return {}
+
+    with duckdb.connect(db_path, read_only=True) as con:
+        con.register("tmp_syms", pd.DataFrame({"symbol": symbols_u}))
+        df = con.execute(
+            """
+            SELECT t.symbol, n.name
+            FROM tmp_syms t
+            LEFT JOIN equity_names n
+              ON UPPER(n.symbol) = t.symbol
+        """
+        ).df()
+        con.unregister("tmp_syms")
+
+    # IMPORTANT: use ["name"] (column), not .name (row index)
+    records = df.to_dict(orient="records")
+    mapping = {r["symbol"]: (r["name"] or "") for r in records}
+
+    found = sum(1 for s in symbols_u if mapping.get(s))
+    missing = [s for s in symbols_u if not mapping.get(s)]
+    log.debug(
+        "db_name_lookup | requested=%d found=%d missing=%d sample_found=%s sample_missing=%s",
+        len(symbols_u),
+        found,
+        len(missing),
+        [{r["symbol"]: r["name"]} for r in records[:3]],
+        missing[:5],
+    )
+    return mapping
+
+
 def _resolve_table(con: duckdb.DuckDBPyConnection, preferred: str) -> str:
     """
     Return a valid table/view name.

@@ -26,6 +26,7 @@ class SymbolHit:
     indices: List[str]
     score: float
     reason: str  # exact | prefix | fuzzy
+    name: str = ""  # <-- new, default empty
 
 
 def _prep(s: str) -> str:
